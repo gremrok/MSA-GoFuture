@@ -1,0 +1,105 @@
+@startuml GoFuture_Global_Failover_with_EU
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+' Стили
+AddContainerTag("eu_region", $borderColor="#FF0000", $fontColor="#FF0000", $bgColor="#FFF2CC")
+AddContainerTag("security", $borderColor="#FF0000", $fontColor="#FF0000")
+AddContainerTag("failover", $borderColor="#FF0000", $fontColor="#FF0000")
+
+Person(passenger, "Пассажир", "Заказывает поездки")
+Person(driver, "Водитель", "Принимает заказы")
+
+System_Boundary(go_future, "GoFuture Global Platform") {
+  
+  Container_Boundary(security_layer, "Слой безопасности") {
+    Container(waf, "Cloud WAF", "Cloudflare/AWS WAF", "Защита от веб-атак", $tags="security")
+    Container(ddos_protection, "DDoS Protection", "AWS Shield Advanced", "Защита от DDoS", $tags="security")
+    Container(firewall, "Network Firewall", "AWS Network Firewall", "Фильтрация трафика", $tags="security")
+  }
+  
+  Container_Boundary(global_routing, "Глобальная маршрутизация") {
+    Container(dns, "Anycast DNS", "Cloudflare DNS", "Геолокационная маршрутизация")
+    Container(global_lb, "Global Load Balancer", "AWS Global Accelerator", "Маршрутизация по задержке")
+  }
+  
+  Container_Boundary(eu_region, "Регион: Европа", $tags="eu_region") {
+    Container_Boundary(frankfurt_primary, "Франкфурт (Primary + Global Backup)") {
+      Container(api_eu, "API Gateway", "Kong", "Маршрутизация запросов")
+      Container(booking_eu, "Booking Service", "Go", "Управление поездками")
+      Container(payments_eu, "Payments Service", "Java", "Интеграция с Яндекс.Пэй")
+      ContainerDb(db_eu, "Primary DB", "CockroachDB", "Синхронная репликация (3 AZ)")
+      ContainerDb(db_eu_backup, "Global Backup DB", "CockroachDB", "Асинхронная репликация всех регионов")
+    }
+  }
+  
+  Container_Boundary(sea_region, "Регион: Юго-Восточная Азия") {
+    Container_Boundary(sg_primary, "Сингапур (Primary)") {
+      Container(api_sg, "API Gateway", "Kong", "Маршрутизация запросов")
+      Container(booking_sg, "Booking Service", "Go", "Управление поездками")
+      Container(driver_sg, "Driver Service", "Go", "Геолокация водителей")
+      ContainerDb(db_sg, "Primary DB", "CockroachDB", "Синхронная репликация (3 AZ)")
+    }
+    
+    Container_Boundary(jk_replica, "Джакарта (Replica)") {
+      Container(api_jk, "API Gateway", "Kong", "Резервный шлюз")
+      ContainerDb(db_jk, "Replica DB", "CockroachDB", "Асинхронная репликация")
+    }
+  }
+  
+  Container_Boundary(sa_region, "Регион: Южная Америка") {
+    Container_Boundary(sp_primary, "Сан-Паулу (Primary)") {
+      Container(api_sp, "API Gateway", "Kong", "Маршрутизация запросов")
+      Container(booking_sp, "Booking Service", "Go", "Управление поездками")
+      ContainerDb(db_sp, "Primary DB", "CockroachDB", "Синхронная репликация (3 AZ)")
+    }
+    
+    Container_Boundary(sc_replica, "Сантьяго (Replica)") {
+      Container(api_sc, "API Gateway", "Kong", "Резервный шлюз")
+      ContainerDb(db_sc, "Replica DB", "CockroachDB", "Асинхронная репликация")
+    }
+  }
+  
+  Container_Boundary(event_platform, "Event Streaming Platform") {
+    Container(kafka_cluster, "Kafka Cluster", "Apache Kafka", "Глобальная шина событий")
+    Container(cdc, "CDC Service", "Debezium", "Репликация: Европа → Регионы")
+  }
+}
+
+System_Ext(yandex_maps, "Яндекс Карты", "Картографический сервис (Европа)")
+System_Ext(yandex_pay, "Яндекс Пэй", "Платёжный шлюз (Европа)")
+
+Rel(passenger, waf, "HTTPS", "Internet")
+Rel(driver, waf, "HTTPS/gRPC", "Internet")
+Rel(waf, ddos_protection, "Защищённый трафик", $tags="security")
+Rel(ddos_protection, firewall, "Отфильтрованный трафик", $tags="security")
+Rel(firewall, dns, "Очищенный трафик", $tags="security")
+Rel(dns, global_lb, "DNS запрос")
+Rel(global_lb, api_eu, "Маршрутизация", "Европа + глобальный бэкап")
+Rel(global_lb, api_sg, "Маршрутизация", "Геолокация + задержка")
+Rel(global_lb, api_sp, "Маршрутизация", "Геолокация + задержка")
+Rel(global_lb, api_jk, "Failover маршрут", $tags="failover")
+Rel(global_lb, api_sc, "Failover маршрут", $tags="failover")
+
+Rel(api_eu, booking_eu, "gRPC")
+Rel(api_eu, payments_eu, "gRPC")
+Rel(booking_eu, db_eu, "Чтение/запись")
+Rel(payments_eu, db_eu, "Чтение/запись")
+Rel(payments_eu, yandex_pay, "Интеграция платежей")
+
+Rel(api_sg, booking_sg, "gRPC")
+Rel(api_sg, driver_sg, "gRPC")
+Rel(booking_sg, db_sg, "Чтение/запись")
+Rel(driver_sg, db_sg, "Чтение/запись")
+
+Rel(api_sp, booking_sp, "gRPC")
+Rel(booking_sp, db_sp, "Чтение/запись")
+
+Rel(db_eu, cdc, "CDC поток (источник)", "Kafka")
+Rel(cdc, db_sg, "Репликация в Сингапур", $tags="failover")
+Rel(cdc, db_sp, "Репликация в Сан-Паулу", $tags="failover")
+Rel(cdc, db_eu_backup, "Глобальный бэкап", $tags="failover")
+
+Rel(booking_eu, yandex_maps, "Маршрутизация для Европы", "REST API")
+Rel(booking_sg, yandex_maps, "Маршрутизация для Азии", "REST API")
+
+@enduml

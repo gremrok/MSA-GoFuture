@@ -1,0 +1,107 @@
+@startuml GoFuture_Event_Driven_Architecture_C2
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+Person(passenger, "Пассажир", "Заказывает поездки")
+Person(driver, "Водитель", "Принимает заказы и передаёт геолокацию")
+
+System_Boundary(go_future, "GoFuture Event-Driven Platform") {
+  
+  Container_Boundary(api_layer, "API Gateway Layer") {
+    Container(api_gateway, "API Gateway", "Kong", "Маршрутизация запросов")
+    Container_Boundary(compat_layer, "Strangler Pattern") {
+      Container(strangler, "Strangler Proxy", "Custom", "Перенаправление к монолиту/микросервисам")
+    }
+  }
+  
+  Container_Boundary(domain_services, "Domain Services (Producers)") {
+    Container(booking_svc, "Booking Service", "Go", "Создание/управление поездками")
+    Container(driver_svc, "Driver Service", "Go", "Управление водителями и геолокацией")
+    Container(pricing_svc, "Pricing Service", "Go", "Динамическое ценообразование")
+    Container(geography_svc, "Geography Service", "Go", "Геозоны и горячие точки")
+    Container(payments_svc, "Payments Service", "Java", "Обработка платежей")
+  }
+  
+  Container_Boundary(event_platform, "Event Streaming Platform") {
+    Container(kafka_cluster, "Kafka Cluster", "Apache Kafka 3.6", "Хранение и доставка событий")
+    
+    Container_Boundary(kafka_topics, "Kafka Topics") {
+      ContainerDb(bookings_topic, "bookings.events", "Kafka Topic", "События бронирования (48 партиций)")
+      ContainerDb(drivers_topic, "drivers.locations", "Kafka Topic", "Геолокация водителей (200 партиций)")
+      ContainerDb(pricing_topic, "pricing.updates", "Kafka Topic", "Обновления цен (24 партиции)")
+      ContainerDb(saga_topic, "saga.orchestrator", "Kafka Topic", "События оркестрации Saga (48 партиций)")
+      ContainerDb(dlq_topic, "dlq.bookings", "Kafka Topic", "Dead Letter Queue")
+    }
+    
+    Container_Boundary(stream_processing, "Stream Processing") {
+      Container(flink_jobs, "Flink Jobs", "Apache Flink 1.18", "Реалтайм-аналитика и геопоиск")
+      Container(kstreams_apps, "Kafka Streams Apps", "Kafka Streams", "Динамическое ценообразование")
+      Container(saga_orchestrator, "Saga Orchestrator", "Java/Akka", "Управление распределёнными транзакциями")
+    }
+  }
+  
+  Container_Boundary(consumers, "Event Consumers") {
+    Container(analytics_svc, "Analytics Service", "Scala", "Сбор метрик и событий")
+    Container(notification_svc, "Notification Service", "Node.js", "Push-уведомления")
+    Container(payouts_svc, "Payouts Service", "Java", "Выплаты водителям")
+  }
+  
+  Container_Boundary(data_storage, "Data Storage") {
+    ContainerDb(booking_db, "Booking DB", "PostgreSQL", "Данные поездок (шардировано по регионам)")
+    ContainerDb(driver_db, "Driver DB", "PostgreSQL", "Профили водителей")
+    ContainerDb(geography_db, "Geography DB", "PostGIS", "Геоданные и зоны")
+    ContainerDb(redis_cluster, "Redis Cluster", "Redis", "Кеш геопозиций и идемпотентных ключей")
+    ContainerDb(clickhouse, "ClickHouse", "Columnar DB", "Аналитическое хранилище")
+  }
+  
+  Container_Boundary(observability, "Observability") {
+    Container(prometheus, "Prometheus", "Metrics", "Сбор метрик")
+    Container(otel_collector, "OTel Collector", "OpenTelemetry", "Сбор трейсов и логов")
+    Container(grafana, "Grafana", "Dashboard", "Визуализация метрик и трейсов")
+    Container(kafka_monitoring, "Kafka Monitoring", "Burrow/KMinion", "Мониторинг лагов потребителей")
+  }
+}
+
+System_Ext(monolith, "Legacy Monolith", "Django", "Постепенно выводится")
+System_Ext(yandex_maps, "Yandex Maps", "Картографический сервис")
+System_Ext(yandex_pay, "Yandex Pay", "Платёжный шлюз")
+
+Rel(passenger, api_gateway, "HTTPS")
+Rel(driver, api_gateway, "HTTPS/gRPC")
+
+Rel(api_gateway, strangler, "Перенаправление запросов")
+Rel(strangler, booking_svc, "Новые эндпоинты", "gRPC")
+Rel(strangler, monolith, "Оставшиеся эндпоинты", "HTTP")
+
+Rel(booking_svc, kafka_cluster, "Публикация событий", "Kafka Producer")
+Rel(driver_svc, kafka_cluster, "Публикация геолокации", "Kafka Producer (10 Гбит/с)")
+Rel(pricing_svc, kafka_cluster, "Публикация цен", "Kafka Producer")
+Rel(geography_svc, kafka_cluster, "Публикация горячих зон", "Kafka Producer")
+
+Rel(kafka_cluster, flink_jobs, "Потребление событий", "Kafka Consumer")
+Rel(kafka_cluster, kstreams_apps, "Потребление событий", "Kafka Consumer")
+Rel(kafka_cluster, saga_orchestrator, "Потребление событий", "Kafka Consumer")
+Rel(kafka_cluster, analytics_svc, "Потребление событий", "Kafka Consumer")
+
+Rel(flink_jobs, geography_db, "Обновление горячих зон", "PostGIS")
+Rel(flink_jobs, clickhouse, "Запись аналитики", "ClickHouse Native")
+Rel(kstreams_apps, redis_cluster, "Хранение состояния цен", "Redis")
+Rel(saga_orchestrator, booking_svc, "Команды подтверждения", "gRPC")
+Rel(saga_orchestrator, driver_svc, "Команды резервирования", "gRPC")
+Rel(saga_orchestrator, payments_svc, "Команды авторизации", "gRPC")
+
+Rel(booking_svc, booking_db, "Шард 1: Европа", "PostgreSQL")
+Rel(booking_svc, booking_db, "Шард 2: Азия", "PostgreSQL")
+Rel(booking_svc, booking_db, "Шард 3: Америка", "PostgreSQL")
+
+Rel(otel_collector, booking_svc, "Сбор трейсов", "OTLP")
+Rel(otel_collector, driver_svc, "Сбор трейсов", "OTLP")
+Rel(otel_collector, saga_orchestrator, "Сбор трейсов", "OTLP")
+Rel(prometheus, booking_svc, "Экспорт метрик", "Prometheus Endpoint")
+Rel(prometheus, kafka_cluster, "Экспорт метрик", "JMX Exporter")
+Rel(prometheus, flink_jobs, "Экспорт метрик", "Prometheus Reporter")
+
+Rel(booking_svc, yandex_maps, "Маршрутизация", "REST API")
+Rel(payments_svc, yandex_pay, "Обработка платежей", "REST API")
+
+
+@enduml

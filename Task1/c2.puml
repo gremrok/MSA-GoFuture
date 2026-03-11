@@ -1,0 +1,94 @@
+@startuml GoFuture_Microservices_Architecture_C2
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+Person(passenger, "Пассажир", "Заказывает поездки")
+Person(driver, "Водитель", "Принимает заказы")
+Person(manager, "Корпоративный менеджер", "Управляет счетами")
+
+System_Boundary(go_future, "GoFuture Platform") {
+  Container_Boundary(api_boundary, "API Gateway Layer") {
+    Container(api_gateway, "API Gateway", "Kong/Tyk", "Маршрутизация, рейт-лимиты, аутентификация")
+    Container_Boundary(compat_boundary, "Совместимость") {
+      Container(strangler, "Strangler Proxy", "Custom", "Перенаправление запросов к монолиту/микросервисам")
+      Container(feature_flags, "Feature Flags", "LaunchDarkly", "Постепенное включение нового функционала")
+    }
+  }
+
+  Container_Boundary(core_services, "Core Domain Services") {
+    Container(booking_svc, "Booking Service", "Go/Java", "Управление поездками и заказами")
+    Container(driver_svc, "Driver Service", "Go/Java", "Профили и геолокация водителей")
+    Container(geography_svc, "Geography Service", "Go", "Геозоны, маршрутизация, умное распределение")
+    Container(pricing_svc, "Pricing Service", "Go", "Динамическое ценообразование")
+    Container(payments_svc, "Payments Service", "Java", "Обработка платежей")
+    Container(payouts_svc, "Payouts Service", "Java", "Выплаты водителям")
+    Container(fraud_svc, "Fraud Service", "Python", "Обнаружение мошенничества")
+  }
+
+  Container_Boundary(support_services, "Support Services") {
+    Container(identity_svc, "Identity Service", "Go", "Аутентификация и авторизация")
+    Container(notification_svc, "Notification Service", "Node.js", "Push-уведомления")
+    Container(analytics_svc, "Analytics Service", "Scala", "Сбор событий и метрик")
+  }
+
+  Container_Boundary(data_layer, "Data Layer") {
+    ContainerDb(booking_db, "Booking DB", "PostgreSQL", "Данные поездок (шардировано по регионам)")
+    ContainerDb(driver_db, "Driver DB", "PostgreSQL", "Профили водителей (шардировано по регионам)")
+    ContainerDb(geography_db, "Geography DB", "PostGIS", "Геоданные и зоны")
+    ContainerDb(payments_db, "Payments DB", "PostgreSQL", "Транзакции (строгое согласование)")
+    ContainerDb(payouts_db, "Payouts DB", "PostgreSQL", "Балансы водителей")
+    ContainerDb(cache, "Redis Cluster", "Redis", "Кеширование геопозиций и сессий")
+    ContainerDb(search, "Elasticsearch Cluster", "Elasticsearch", "Геопоиск водителей")
+    ContainerQueue(events, "Event Bus", "Kafka", "События доменных агрегатов")
+  }
+
+  Container_Boundary(platform, "Platform Services") {
+    Container(service_mesh, "Service Mesh", "Linkerd", "Наблюдаемость и отказоустойчивость")
+    Container(config, "Config Server", "Consul", "Управление конфигурацией")
+    Container(secrets, "Secrets Manager", "Vault", "Управление секретами")
+  }
+}
+
+System_Ext(monolith, "Legacy Monolith", "Django", "Постепенно выводится из эксплуатации")
+System_Ext(yandex_pay, "Яндекс Пэй", "Платёжный шлюз")
+System_Ext(yandex_maps, "Яндекс Карты", "Картографический сервис")
+System_Ext(bank_api, "API Банка", "Банковские выплаты")
+System_Ext(fcm, "FCM/APNs", "Push-сервисы")
+
+Rel(passenger, api_gateway, "HTTPS", "REST/GraphQL")
+Rel(driver, api_gateway, "HTTPS", "REST/gRPC")
+Rel(manager, api_gateway, "HTTPS", "REST")
+
+Rel(api_gateway, strangler, "Перенаправление запросов")
+Rel(strangler, monolith, "Оставшиеся эндпоинты", "HTTP")
+Rel(strangler, booking_svc, "Новые эндпоинты", "gRPC")
+Rel(strangler, driver_svc, "Новые эндпоинты", "gRPC")
+' ... остальные связи к сервисам
+
+Rel(booking_svc, driver_svc, "Поиск водителя", "gRPC")
+Rel(booking_svc, pricing_svc, "Расчёт цены", "gRPC")
+Rel(booking_svc, geography_svc, "Оптимизация маршрута", "gRPC")
+Rel(booking_svc, fraud_svc, "Проверка фрода", "Async Event")
+
+Rel(driver_svc, geography_svc, "Геопозиция → зона", "gRPC")
+Rel(geography_svc, search, "Индексация геопозиций", "Elasticsearch API")
+
+Rel(booking_svc, events, "Событие: поездка_создана", "Kafka")
+Rel(driver_svc, events, "Событие: водитель_изменил_статус", "Kafka")
+Rel(payments_svc, events, "Событие: платёж_завершён", "Kafka")
+
+Rel(booking_svc, booking_db, "Шард 1: Европа", "PostgreSQL")
+Rel(booking_svc, booking_db, "Шард 2: Азия", "PostgreSQL")
+Rel(booking_svc, booking_db, "Шард 3: Америка", "PostgreSQL")
+
+Rel(service_mesh, booking_svc, "mTLS, метрики", "Sidecar")
+Rel(service_mesh, driver_svc, "mTLS, метрики", "Sidecar")
+
+Rel(booking_svc, monolith, "Dual Write (миграция)", "HTTP", "🔴 Временно")
+Rel(driver_svc, monolith, "CDC из БД монолита", "Debezium", "🟡 Временно")
+
+Rel(booking_svc, yandex_maps, "Маршрутизация", "REST API")
+Rel(payments_svc, yandex_pay, "Обработка платежей", "REST API")
+Rel(payouts_svc, bank_api, "Выплаты", "REST API")
+Rel(notification_svc, fcm, "Push-уведомления", "REST API")
+
+@enduml

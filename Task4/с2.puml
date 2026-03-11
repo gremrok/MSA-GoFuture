@@ -1,0 +1,94 @@
+@startuml GoFuture_Data_Platform_C2
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+' Стили для новых компонентов (выделены красным)
+AddContainerTag("new_component", $borderColor="#FF0000", $fontColor="#FF0000", $bgColor="#FFF2F2")
+AddContainerTag("ml_component", $borderColor="#9C27B0", $fontColor="#9C27B0", $bgColor="#F8F0FC")
+
+Person(passenger, "Пассажир", "Заказывает поездки")
+Person(driver, "Водитель", "Принимает заказы")
+
+System_Boundary(go_future, "GoFuture Platform") {
+  
+  Container_Boundary(services, "Микросервисы (источники данных)") {
+    Container(booking_svc, "Booking Service", "Go", "Создание поездок, события бронирования")
+    Container(driver_svc, "Driver Service", "Go", "Геолокация водителей, статусы")
+    Container(pricing_svc, "Pricing Service", "Go", "Динамическое ценообразование")
+    Container(payments_svc, "Payments Service", "Java", "Обработка платежей")
+    Container(fraud_svc, "Fraud Service", "Python", "Обнаружение мошенничества")
+  }
+  
+  Container_Boundary(obs_new, "Система наблюдаемости (НОВОЕ)", $tags="new_component") {
+    Container(otel_collector, "OpenTelemetry Collector", "OTel", "Сбор трейсов, метрик, логов", $tags="new_component")
+    Container(jaeger, "Jaeger", "Tracing", "Хранение и анализ трейсов", $tags="new_component")
+    Container(prometheus, "Prometheus", "Metrics", "Сбор и хранение метрик", $tags="new_component")
+    Container(loki, "Loki", "Logs", "Агрегация логов", $tags="new_component")
+    Container(grafana, "Grafana", "Dashboard", "Визуализация метрик и трейсов", $tags="new_component")
+  }
+  
+  Container_Boundary(streaming_new, "Потоковая обработка (НОВОЕ)", $tags="new_component") {
+    Container(kafka, "Kafka Cluster", "Event Streaming", "Шина событий микросервисов", $tags="new_component")
+    Container(flink_jobs, "Flink Jobs", "Stream Processing", "Обработка событий в реальном времени", $tags="new_component")
+    Container(kafka_connect, "Kafka Connect", "CDC", "Репликация из БД в Kafka", $tags="new_component")
+  }
+  
+  Container_Boundary(storage_new, "Хранилища данных (НОВОЕ)", $tags="new_component") {
+    Container(clickhouse, "ClickHouse", "Columnar DB", "Аналитическое хранилище", $tags="new_component")
+    Container(feature_store, "Feature Store", "ML Features", "Хранилище признаков для ML", $tags="new_component")
+    Container(raw_data_lake, "Raw Data Lake", "GCS/S3", "Хранение сырых данных", $tags="new_component")
+  }
+  
+  Container_Boundary(ml_platform_new, "ML-платформа (НОВОЕ)", $tags="ml_component") {
+    Container(ml_training, "ML Training Service", "Python/Scala", "Обучение моделей", $tags="ml_component")
+    Container(ml_serving, "ML Serving Service", "TensorFlow Serving", "Инференс моделей в реальном времени", $tags="ml_component")
+    Container(model_registry, "Model Registry", "MLflow", "Управление версиями моделей", $tags="ml_component")
+  }
+  
+  Container_Boundary(bi_new, "BI и аналитика (НОВОЕ)", $tags="new_component") {
+    Container(datalens, "DataLens", "BI Tool", "Дашборды и отчёты", $tags="new_component")
+    Container(notebooks, "Jupyter Notebooks", "Data Science", "Эксперименты и анализ", $tags="new_component")
+  }
+}
+
+System_Ext(yandex_maps, "Яндекс Карты", "Картографический сервис")
+System_Ext(yandex_pay, "Яндекс Пэй", "Платёжный шлюз")
+
+' Связи источников данных
+Rel(booking_svc, kafka, "Публикация событий", "Kafka Producer", $tags="new_component")
+Rel(driver_svc, kafka, "Публикация геолокации", "Kafka Producer", $tags="new_component")
+Rel(pricing_svc, kafka, "Публикация цен", "Kafka Producer", $tags="new_component")
+Rel(payments_svc, kafka, "Публикация платежей", "Kafka Producer", $tags="new_component")
+Rel(fraud_svc, kafka, "Публикация инцидентов", "Kafka Producer", $tags="new_component")
+
+Rel(booking_svc, otel_collector, "Экспорт трейсов", "OTLP", $tags="new_component")
+Rel(driver_svc, otel_collector, "Экспорт метрик", "OTLP", $tags="new_component")
+Rel(pricing_svc, otel_collector, "Экспорт логов", "OTLP", $tags="new_component")
+
+' Связи потоковой обработки
+Rel(kafka, flink_jobs, "Потребление событий", "Kafka Consumer", $tags="new_component")
+Rel(flink_jobs, clickhouse, "Запись агрегатов", "ClickHouse Native", $tags="new_component")
+Rel(flink_jobs, feature_store, "Обогащение признаков", "Feature API", $tags="new_component")
+Rel(flink_jobs, raw_data_lake, "Архивация сырых данных", "GCS API", $tags="new_component")
+
+' Связи ML-платформы
+Rel(raw_data_lake, ml_training, "Обучение моделей", "Пакетная обработка", $tags="ml_component")
+Rel(feature_store, ml_training, "Получение признаков", "Feature API", $tags="ml_component")
+Rel(ml_training, model_registry, "Регистрация моделей", "MLflow API", $tags="ml_component")
+Rel(model_registry, ml_serving, "Деплой моделей", "Model Serving", $tags="ml_component")
+Rel(ml_serving, pricing_svc, "Прогноз спроса", "gRPC", $tags="ml_component")
+Rel(ml_serving, fraud_svc, "Скоринг фрода", "gRPC", $tags="ml_component")
+
+' Связи BI и аналитики
+Rel(clickhouse, datalens, "Визуализация данных", "SQL", $tags="new_component")
+Rel(clickhouse, notebooks, "Анализ данных", "JDBC", $tags="new_component")
+Rel(feature_store, notebooks, "Эксперименты с признаками", "Feature API", $tags="new_component")
+
+' Связи наблюдаемости
+Rel(otel_collector, jaeger, "Экспорт трейсов", "Jaeger gRPC", $tags="new_component")
+Rel(otel_collector, prometheus, "Экспорт метрик", "Prometheus Remote Write", $tags="new_component")
+Rel(otel_collector, loki, "Экспорт логов", "Loki API", $tags="new_component")
+Rel(prometheus, grafana, "Запрос метрик", "PromQL", $tags="new_component")
+Rel(jaeger, grafana, "Визуализация трейсов", "Jaeger Query", $tags="new_component")
+Rel(loki, grafana, "Поиск логов", "LogQL", $tags="new_component")
+
+@enduml
