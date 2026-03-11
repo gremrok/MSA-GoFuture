@@ -1,0 +1,77 @@
+@startuml GoFuture_Multitenant_Platform_C2
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+' Стили для новых компонентов (выделены красным)
+AddContainerTag("multitenant", $borderColor="#FF0000", $fontColor="#FF0000", $bgColor="#FFF2F2")
+AddContainerTag("iam", $borderColor="#FF0000", $fontColor="#FF0000", $bgColor="#FFF9F9")
+AddContainerTag("monitoring", $borderColor="#FF6B35", $fontColor="#FF6B35", $bgColor="#FFF5F0")
+
+Person(partner_admin, "Администратор партнёра", "Управляет настройками партнёрского аккаунта")
+Person(partner_driver, "Водитель партнёра", "Выполняет заказы в рамках партнёрской сети")
+Person(partner_passenger, "Пассажир партнёра", "Заказывает поездки через партнёрское приложение")
+
+System_Boundary(go_future, "GoFuture Multitenant Platform") {
+  
+  Container_Boundary(iam_boundary, "IAM-система (НОВОЕ)", $tags="iam") {
+    Container(idp, "Identity Provider", "Keycloak", "Аутентификация и управление пользователями", $tags="iam")
+    Container(sso_gateway, "SSO Gateway", "OAuth2/OIDC", "Единая точка входа для партнёров", $tags="iam")
+    Container(role_manager, "Role Manager", "Custom Service", "Управление ролями и политиками доступа", $tags="iam")
+    Container(tenant_context, "Tenant Context Filter", "Middleware", "Извлечение tenant_id из токена", $tags="multitenant")
+  }
+  
+  Container_Boundary(onboarding_boundary, "Система онбординга (НОВОЕ)", $tags="multitenant") {
+    Container(onboarding_portal, "Партнёрский портал", "React", "Самостоятельная регистрация и настройка", $tags="multitenant")
+    Container(onboarding_service, "Onboarding Service", "Go", "Автоматизация процесса подключения", $tags="multitenant")
+    Container(tenant_provisioner, "Tenant Provisioner", "Go", "Создание изолированной инфраструктуры", $tags="multitenant")
+  }
+  
+  Container_Boundary(core_services, "Микросервисы (мультитенантные)") {
+    Container(booking_svc, "Booking Service", "Go", "Управление поездками с изоляцией по tenant_id", $tags="multitenant")
+    Container(driver_svc, "Driver Service", "Go", "Управление водителями с изоляцией по tenant_id", $tags="multitenant")
+    Container(payments_svc, "Payments Service", "Java", "Обработка платежей с изоляцией по tenant_id", $tags="multitenant")
+    Container(api_gateway, "API Gateway", "Kong", "Маршрутизация с учётом tenant_id", $tags="multitenant")
+  }
+  
+  Container_Boundary(data_layer, "Хранилища данных (изолированные)") {
+    ContainerDb(tenant_db, "Tenant Database", "PostgreSQL", "Отдельная схема для каждого партнёра", $tags="multitenant")
+    ContainerDb(shared_cache, "Shared Redis", "Redis", "Ключи с префиксом tenant_id", $tags="multitenant")
+    ContainerQueue(shared_kafka, "Shared Kafka", "Kafka", "Топики с префиксом tenant_id", $tags="multitenant")
+  }
+  
+  Container_Boundary(monitoring_boundary, "Мониторинг мультитенантности (НОВОЕ)", $tags="monitoring") {
+    Container(tenant_metrics, "Tenant Metrics Collector", "Prometheus", "Сбор метрик с разделением по tenant_id", $tags="monitoring")
+    Container(tenant_logs, "Tenant Log Aggregator", "Loki", "Логи с меткой tenant_id", $tags="monitoring")
+    Container(tenant_dashboard, "Tenant Dashboard", "Grafana", "Дашборды с фильтрацией по партнёру", $tags="monitoring")
+    Container(isolation_monitor, "Isolation Monitor", "Custom", "Обнаружение нарушений изоляции", $tags="monitoring")
+  }
+}
+
+System_Ext(external_sso, "Внешние SSO-провайдеры", "Google/Azure AD", "Интеграция для партнёров")
+System_Ext(partner_app, "Партнёрское приложение", "Mobile/Web", "Кастомизированный клиент для партнёра")
+
+Rel(partner_admin, onboarding_portal, "Регистрация партнёра", "HTTPS", $tags="multitenant")
+Rel(onboarding_portal, onboarding_service, "Запрос на подключение", "REST", $tags="multitenant")
+Rel(onboarding_service, tenant_provisioner, "Создание инфраструктуры", "gRPC", $tags="multitenant")
+Rel(tenant_provisioner, tenant_db, "Создание схемы БД", "SQL", $tags="multitenant")
+Rel(tenant_provisioner, idp, "Регистрация клиента OAuth2", "Admin API", $tags="iam")
+
+Rel(partner_admin, sso_gateway, "Аутентификация через SSO", "OAuth2", $tags="iam")
+Rel(sso_gateway, idp, "Валидация токена", "OIDC", $tags="iam")
+Rel(idp, external_sso, "Делегированная аутентификация", "SAML/OIDC", $tags="iam")
+
+Rel(partner_passenger, partner_app, "Заказ поездки", "HTTPS")
+Rel(partner_app, api_gateway, "API-запросы", "REST/gRPC", $tags="multitenant")
+Rel(api_gateway, tenant_context, "Извлечение tenant_id", "Middleware", $tags="multitenant")
+Rel(tenant_context, booking_svc, "Запрос с tenant_id", "gRPC", $tags="multitenant")
+Rel(booking_svc, tenant_db, "Запрос с фильтром tenant_id", "SQL", $tags="multitenant")
+Rel(booking_svc, shared_kafka, "Публикация события с tenant_id", "Kafka", $tags="multitenant")
+
+Rel(booking_svc, tenant_metrics, "Экспорт метрик с tenant_id", "Prometheus", $tags="monitoring")
+Rel(booking_svc, tenant_logs, "Логи с меткой tenant_id", "Loki API", $tags="monitoring")
+Rel(isolation_monitor, tenant_db, "Проверка изоляции", "SQL Audit", $tags="monitoring")
+Rel(isolation_monitor, tenant_metrics, "Анализ аномалий", "PromQL", $tags="monitoring")
+
+Rel(tenant_dashboard, partner_admin, "Дашборд партнёра", "HTTPS", $tags="monitoring")
+
+
+@enduml
